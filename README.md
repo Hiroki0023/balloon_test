@@ -22,4 +22,27 @@ streamlit run app.py
 
 ## データ保存について
 
-入力データは実行環境の `database.csv` に保存されます。Streamlit Community Cloudのファイル保存は永続的ではなく、アプリの再起動・再デプロイなどでデータが消える可能性があります。また、複数ユーザー間で同じファイルを共有します。本番運用では外部データベースへの移行が必要です。
+設定と日々の体重は Supabase（Postgres）の `diet_data` テーブルに保存します。アプリを再起動・再デプロイしても消えません。画面全体は単一のパスワードで保護されます（自分ひとりで使う前提です）。
+
+### 初回セットアップ（本人が行う）
+
+0. `streamlit run` に使う Python に依存パッケージを入れます（`pip install -r requirements.txt`）。入っているかは `python -c "from supabase import create_client; print('ok')"` で確かめられます。
+1. Supabase の SQL Editor で `migrations/0001_create_diet_data.sql` を実行します。
+2. `.streamlit/secrets.toml.example` をコピーして `.streamlit/secrets.toml` を作り、3 つの値を入れます。
+   - `SUPABASE_URL`: Supabase の Project Settings → API にある Project URL
+   - `SUPABASE_SERVICE_KEY`: 同じ画面の、サーバ専用の秘密鍵（service_role 相当）
+   - `APP_PASSWORD`: 自分で決めたパスワード（16 文字以上のランダムな文字列を推奨）
+3. Community Cloud では、アプリの Settings → Secrets に同じ 3 行を貼ります。
+
+秘密鍵とパスワードは `.streamlit/secrets.toml` と Community Cloud の Secrets だけに置き、リポジトリやチャットには載せません。詳しい手順は `02_プロジェクト/ballon/実行手順書.md` を参照してください。
+
+日付は日本時間（JST）で扱います。
+
+## テスト
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests
+```
+
+テストは偽のデータベースを使うため、Supabase の鍵は不要です。

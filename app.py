@@ -13,7 +13,7 @@
 #  ▼ 動かし方（書きかけでも動かして確認できます）
 #     cd （このファイルが置いてある場所）
 #     streamlit run app.py
-#  ▼ ファイル構成： app.py（このファイル）＋ style.css＋ database.csv
+#  ▼ ファイル構成： app.py（このファイル）＋ style.css＋ db.py / gate.py / jst.py（保存先は Supabase）
 # =============================================================
 
 import os
@@ -34,12 +34,29 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 
+from db import (
+    DataStoreError,
+    DietStore,
+    InvalidInputError,
+    MSG_READ_FAILED,
+    MSG_WRITE_FAILED,
+    log_from_rows,
+    make_client,
+    missing_secrets,
+    settings_from_rows,
+)
+from gate import require_password
+from jst import today_jst
+
 st.set_page_config(
     page_title="ダイエット応援アプリ v3",       # ブラウザのタブに表示されるタイトル
     page_icon="🎈",                # タブのファビコン（絵文字やパスを指定可能）
     layout="wide",                 # "centered"（デフォルト）か "wide"（横幅いっぱい）
     initial_sidebar_state="expanded"  # サイドバーの初期状態："auto", "expanded", "collapsed"
 )
+
+# パスワードを通るまで、これより下（DBの読み書き・サイドバーを含む）は実行しない
+require_password()
 
 st.title(
     "🎈 ダイエット応援アプリ v3"
@@ -50,8 +67,6 @@ st.write(
     "あなたがダイエットに成功するまで伴走します。"
     "今日も楽しんで、ダイエットしましょう！"
 )
-
-DB_FILE = "database.csv"
 
 
 # ↑↑↑ ここまで章1 ↑↑↑
@@ -68,110 +83,76 @@ DB_FILE = "database.csv"
 #  ★pandas（pd）は CSV を「表」として扱う道具。dtype=str は「全部、文字として読む」指定
 #    （60.0 が 60 に化けないようにそろえる）。
 
-# 【_load_db】database.csv を丸ごと表として読み込む。無ければ空の表（列だけ）を返す。
-# ヒント：
-#   - if os.path.exists(DB_FILE):                      # ファイルがあるか確認
-#         df = pd.read_csv(DB_FILE, dtype=str)         # 表として読み込む（全部 文字で）
-#         for c in ["type", "key", "value"]:           # 万一 列が欠けても落ちない保険
-#             if c not in df.columns: df[c] = None
-#         return df[["type", "key", "value"]]
-#   - 無いときは return pd.DataFrame(columns=["type", "key", "value"])
-def _load_db():
-    # ↓↓↓ ここに書く（return まで）↓↓↓
-    if os.path.exists(DB_FILE):
-        df = pd.read_csv(DB_FILE, dtype=str)
+# 保存先は Supabase（テーブル diet_data）。関数名・引数・戻り値は従来のまま（章4〜8はそのまま使える）。
+# 接続情報は st.secrets（SUPABASE_URL / SUPABASE_SERVICE_KEY）から読む。値はコードに書かない。
+@st.cache_resource(show_spinner=False)
+def _make_store(url, key):
+    return DietStore(make_client(url, key))
 
-        for c in ["type", "key", "value"]:
-            if c not in df.columns:
-                df[c] = None
 
-        return df[["type", "key", "value"]]
-    return pd.DataFrame(columns=["type", "key", "value"])
-    # ↑↑↑ ここまで ↑↑↑
+def get_store():
+    missing = missing_secrets(st.secrets)
+    if missing:
+        st.error("設定が不足しています: " + ", ".join(missing))
+        st.stop()
+    try:
+        return _make_store(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_SERVICE_KEY"])
+    except DataStoreError:
+        st.error(MSG_READ_FAILED)
+        st.stop()
+
+
+# 読み出しは 60 秒キャッシュし、書き込みに成功したら破棄する（1回の実行で最大5回DBを読むため）。
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_rows(_store):
+    return _store.fetch_all()
+
+
+def _rows():
+    store = get_store()
+    try:
+        return _cached_rows(store)
+    except DataStoreError:
+        st.error(MSG_READ_FAILED)
+        st.stop()  # 空のプランを見せない
+
+
+def _write(action):
+    store = get_store()
+    try:
+        action(store)
+    except InvalidInputError as exc:
+        st.error(f"入力内容が正しくないため保存しませんでした。{exc}")
+        st.stop()
+    except DataStoreError:
+        st.error(MSG_WRITE_FAILED)
+        st.stop()  # 成功メッセージや st.rerun() に進ませない
+    _cached_rows.clear()
+
 
 # 【load_settings】設定だけを取り出して辞書で返す（例 {"goal":"60.0", "deadline":"2026-08-25", ...}）。
-# ヒント：
-#   - df = _load_db()
-#   - rows = df[df["type"] == "setting"]               # type が setting の行だけ
-#   - return {row["key"]: row["value"] for _, row in rows.iterrows()}   # key:value の辞書に
 def load_settings():
-    # ↓↓↓ ここに書く（return まで）↓↓↓
-    df = _load_db()
-    rows = df[df["type"] == "setting"]
-    return {row["key"]: row["value"] for _, row in rows.iterrows()}
-    # ↑↑↑ ここまで ↑↑↑
+    return settings_from_rows(_rows())
 
 # 【save_setting】設定を1つ保存する（同じ key があれば上書き）。
-# ヒント：
-#   - df = _load_db()
-#   - keep = ~((df["type"] == "setting") & (df["key"] == str(key)))   # 同じ設定の古い行を外す
-#   - df = df[keep]
-#   - new_row = pd.DataFrame({"type": ["setting"], "key": [str(key)], "value": [str(value)]})
-#   - df = pd.concat([df, new_row], ignore_index=True)                 # 新しい行を足す
-#   - df.to_csv(DB_FILE, index=False)                                  # CSVに書き出す
 def save_setting(key, value):
-    # ↓↓↓ ここに書く ↓↓↓
-    df = _load_db()
+    _write(lambda store: store.upsert_settings({str(key): value}))
 
-    keep = ~((df["type"] == "setting") & (df["key"] == str(key)))
-    df = df[keep]
-
-    new_row = pd.DataFrame({
-        "type": ["setting"],
-        "key": [str(key)],
-        "value": [str(value)]
-    })
-
-    df = pd.concat([df, new_row], ignore_index=True)
-    df.to_csv(DB_FILE, index=False)
-    # ↑↑↑ ここまで ↑↑↑
+# 【save_settings】設定を複数まとめて1回で保存する（途中失敗で新旧が混ざらないようにする）。
+def save_settings(items):
+    _write(lambda store: store.upsert_settings({str(k): v for k, v in items.items()}))
 
 # 【load_log】日々の記録を date / weight の表で取り出す。無ければ空の表。
-# ヒント：
-#   - df = _load_db(); rows = df[df["type"] == "log"].copy()           # type が log の行だけ
-#   - if rows.empty: return pd.DataFrame(columns=["date", "weight"])
-#   - out = pd.DataFrame({"date": rows["key"].astype(str),
-#                         "weight": rows["value"].astype(float)})       # 体重は数値に直す
-#   - return out.sort_values("date").reset_index(drop=True)            # 日付順に並べる
 def load_log():
-    # ↓↓↓ ここに書く（return まで）↓↓↓
-    df = _load_db()
-    rows = df[df["type"] == "log"].copy()
-
-    if rows.empty:
-        return pd.DataFrame(columns=["date", "weight"])
-
-    out = pd.DataFrame({
-        "date": rows["key"].astype(str),
-        "weight": rows["value"].astype(float)
-    })
-
-    return out.sort_values("date").reset_index(drop=True)
-    # ↑↑↑ ここまで ↑↑↑
+    return log_from_rows(_rows())
 
 # 【save_record】1日分の記録を保存（同じ日付は上書きして1日1行に保つ）。
-# ヒント：save_setting とほぼ同じ。違いは type が "log"、key が日付、value が体重。
-#   - df = _load_db()
-#   - keep = ~((df["type"] == "log") & (df["key"] == str(date_str)))   # 同じ日付の古い行を外す
-#   - df = df[keep]
-#   - new_row = pd.DataFrame({"type": ["log"], "key": [str(date_str)], "value": [str(weight)]})
-#   - df = pd.concat([df, new_row], ignore_index=True); df.to_csv(DB_FILE, index=False)
 def save_record(date_str, weight):
-    # ↓↓↓ ここに書く ↓↓↓
-    df = _load_db()
+    _write(lambda store: store.upsert_log(date_str, weight))
 
-    keep = ~((df["type"] == "log") & (df["key"] == str(date_str)))
-    df = df[keep]
-
-    new_row = pd.DataFrame({
-        "type": ["log"],
-        "key": [str(date_str)],
-        "value": [str(weight)]
-    })
-
-    df = pd.concat([df, new_row], ignore_index=True)
-    df.to_csv(DB_FILE, index=False)
-    # ↑↑↑ ここまで ↑↑↑
+# 【delete_all_data】すべての設定と記録を削除する（リセット用）。
+def delete_all_data():
+    _write(lambda store: store.delete_all())
 
 
 # ===== 章2のおまけ：結果を前面に出す関数（文字＋風船）担当：@AsanoMiyo-13/まよりん/浅野深世 =====
@@ -279,10 +260,22 @@ def current_week_index(start_date, today, weeks):
 # ヒント：if st.sidebar.button("データをリセット"): os.remove(DB_FILE) で消す → st.rerun()
 #         （os.path.exists(DB_FILE) で「あれば消す」にすると安全）
 # ↓↓↓ 余裕があれば書く（無くても本体は動きます）↓↓↓
-if st.sidebar.button("データをリセット"):
-    if os.path.exists(DB_FILE):
-        os.remove(DB_FILE)
+# 実データを守るため、チェックを入れてからでないと消せない（ボタンの処理は on_click で先に行う）。
+def _on_reset_click():
+    confirmed = bool(st.session_state.get("confirm_reset"))
+    st.session_state["reset_go"] = confirmed
+    st.session_state["reset_denied"] = not confirmed
+    st.session_state["confirm_reset"] = False
+
+
+st.sidebar.checkbox("すべての設定と記録を削除することを確認しました", key="confirm_reset")
+st.sidebar.button("データをリセット", on_click=_on_reset_click)
+
+if st.session_state.pop("reset_go", False):
+    delete_all_data()
     st.rerun()
+if st.session_state.pop("reset_denied", False):
+    st.sidebar.warning("リセットするには、先にチェックを入れてください。")
 
 # ===== 章4：目標プランを決める（①）=====
 # この章は2人で分担します。【入力欄UI】→【保存処理】の順に書くとつながります。
@@ -306,7 +299,7 @@ default_goal = float(settings["goal"]) if "goal" in settings else 60.0
 default_deadline = (
     datetime.date.fromisoformat(settings["deadline"])
     if "deadline" in settings
-    else datetime.date.today() + datetime.timedelta(days=56)
+    else today_jst() + datetime.timedelta(days=56)
 )
 
 st.header("①目標を設定しましょう")
@@ -351,14 +344,15 @@ with col3:
 # ↓↓↓ 田野邉さん：ここに書く ↓↓↓
 
 if st.button("目標プランを保存"):
-    save_setting(
-        "start_weight", start_weight_input
-    )  # だーあさパートで作成された変数を受取
-    save_setting("goal", goal_input)  # だーあさパートで作成された変数を受取
-    save_setting(
-        "deadline", deadline_input.isoformat()
-    )  # だーあさパートで作成された変数を受取
-    save_setting("start_date", datetime.date.today().isoformat())  #  ← プランを立てた日
+    # 4つを1回でまとめて保存する（途中で失敗しても、新旧の設定が混ざらない）
+    save_settings(
+        {
+            "start_weight": start_weight_input,
+            "goal": goal_input,
+            "deadline": deadline_input.isoformat(),
+            "start_date": today_jst().isoformat(),  #  ← プランを立てた日（日本時間）
+        }
+    )
     st.success("...")
     st.rerun()
 
@@ -400,7 +394,7 @@ if all(k in settings for k in needed):
     start_date = datetime.date.fromisoformat(settings["start_date"])
 
     # 「現在が減量開始から何週目にあたるか」の計算のために今日の日付を取得
-    today = datetime.date.today()
+    today = today_jst()
 
     # make_weekly_plan関数を利用して目標達成までの週数とそれぞれの目標体重を取得
     weeks, plan = make_weekly_plan(start_weight, goal, start_date, deadline)
@@ -483,7 +477,7 @@ else:
 
 st.header("③ 体重を記録する")
 
-selected_date = st.date_input("記録する日付", key="record_date")
+selected_date = st.date_input("記録する日付", value=today_jst(), key="record_date")
 date_str = selected_date.isoformat()
 
 if "deadline" in settings and selected_date > datetime.date.fromisoformat(settings["deadline"]):
