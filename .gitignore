@@ -9,3 +9,8 @@ database.csv
 
 # Streamlit secrets must be configured in Community Cloud, never committed.
 .streamlit/secrets.toml
+
+# Munder Difflin runtime state (machine-specific and regenerated locally).
+roster.json
+roster-backups/
+hive/

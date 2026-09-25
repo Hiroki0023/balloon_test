@@ -1,0 +1,17 @@
+{
+  "spec": "munder-difflin/tech0-kit@1",
+  "appVersion": "0.5.0",
+  "writtenAt": "2026-09-25T14:34:23.529Z",
+  "written": [
+    ".claude/agents/kurosu.md",
+    ".claude/agents/mirin.md",
+    ".claude/agents/rijicho.md",
+    ".claude/agents/takahiro.md",
+    ".claude/agents/terao.md",
+    ".claude/agents/yamapi.md",
+    "00_ルール/V字フロー規定.md",
+    "00_ルール/スタッフ共通ブリーフィング.md",
+    "CLAUDE.munder.md"
+  ],
+  "kept": []
+}
