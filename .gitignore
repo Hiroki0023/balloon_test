@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.DS_Store
+
+# Runtime data. Do not publish users' weight records.
+database.csv
+
+# Streamlit secrets must be configured in Community Cloud, never committed.
+.streamlit/secrets.toml

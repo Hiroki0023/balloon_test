@@ -1,0 +1,41 @@
+.celebrate {
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+    position: fixed;
+    z-index: 9999;
+}
+
+.balloon {
+    animation: float-up 6s ease-in infinite;
+    border-radius: 50% 50% 45% 45%;
+    bottom: -90px;
+    height: 64px;
+    opacity: 0.9;
+    position: absolute;
+    width: 50px;
+}
+
+.balloon::after {
+    background: inherit;
+    bottom: -5px;
+    content: "";
+    height: 10px;
+    left: 21px;
+    position: absolute;
+    transform: rotate(45deg);
+    width: 10px;
+}
+
+.result-msg {
+    font-size: clamp(1.4rem, 4vw, 2.4rem);
+    font-weight: 800;
+    margin: 1rem 0;
+    text-align: center;
+}
+
+@keyframes float-up {
+    0% { transform: translateY(0) rotate(-4deg); }
+    50% { transform: translateY(-55vh) rotate(5deg); }
+    100% { transform: translateY(-115vh) rotate(-3deg); }
+}
